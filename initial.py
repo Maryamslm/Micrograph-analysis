@@ -241,7 +241,7 @@ if uploaded_file is not None:
                 "Phase": ["HCP (Red)", "FCC (Green)", "Boundaries"],
                 "Area Fraction (%)": [red_fraction, green_fraction, boundary_fraction]
             })
-        st.bar_chart(chart_data, x="Phase", y="Area Fraction (%)")
+        st.bar_chart(chart_data.set_index("Phase"))
 
     with col2:
         st.subheader("🖼️ Segmentation Preview")
@@ -273,18 +273,63 @@ if uploaded_file is not None:
             mime='text/csv',
         )
         
-        # Histograms
+        # Histograms - Fixed version using proper binning
         st.write("**Grain Size Distribution (ECD):**")
+        
+        try:
+            import plotly.express as px
+            plotly_available = True
+        except ImportError:
+            plotly_available = False
+            st.warning("Install plotly for better histograms: `pip install plotly`")
+        
         col_h1, col_h2 = st.columns(2)
+        
         with col_h1:
             if not df_red_morph.empty:
-                st.bar_chart(df_red_morph, x="ECD (µm)", title="HCP Grain Size Distribution")
+                st.write("**HCP Phase**")
+                if plotly_available:
+                    fig_red = px.histogram(df_red_morph, x="ECD (µm)", nbins=20, 
+                                          title="HCP Grain Size Distribution",
+                                          labels={"ECD (µm)": "Equivalent Diameter (µm)"})
+                    st.plotly_chart(fig_red, use_container_width=True)
+                else:
+                    # Fallback: simple stats without plot
+                    st.write(f"- Count: {len(df_red_morph)} grains")
+                    st.write(f"- Mean ECD: {df_red_morph['ECD (µm)'].mean():.2f} µm")
+                    st.write(f"- Std Dev: {df_red_morph['ECD (µm)'].std():.2f} µm")
+                    st.write(f"- Min: {df_red_morph['ECD (µm)'].min():.2f} µm")
+                    st.write(f"- Max: {df_red_morph['ECD (µm)'].max():.2f} µm")
+        
         with col_h2:
             if not df_green_morph.empty:
-                st.bar_chart(df_green_morph, x="ECD (µm)", title="FCC Grain Size Distribution")
-                
+                st.write("**FCC Phase**")
+                if plotly_available:
+                    fig_green = px.histogram(df_green_morph, x="ECD (µm)", nbins=20,
+                                            title="FCC Grain Size Distribution",
+                                            labels={"ECD (µm)": "Equivalent Diameter (µm)"})
+                    st.plotly_chart(fig_green, use_container_width=True)
+                else:
+                    # Fallback: simple stats without plot
+                    st.write(f"- Count: {len(df_green_morph)} grains")
+                    st.write(f"- Mean ECD: {df_green_morph['ECD (µm)'].mean():.2f} µm")
+                    st.write(f"- Std Dev: {df_green_morph['ECD (µm)'].std():.2f} µm")
+                    st.write(f"- Min: {df_green_morph['ECD (µm)'].min():.2f} µm")
+                    st.write(f"- Max: {df_green_morph['ECD (µm)'].max():.2f} µm")
+        
         st.write("**Circularity Distribution (Shape):**")
-        st.bar_chart(df_all_morph, x="Circularity", color="Phase", title="Circularity by Phase (1.0 = Perfect Circle)")
+        if not df_all_morph.empty:
+            if plotly_available:
+                fig_circ = px.histogram(df_all_morph, x="Circularity", color="Phase", 
+                                       nbins=20, title="Circularity by Phase (1.0 = Perfect Circle)",
+                                       labels={"Circularity": "Circularity", "Phase": "Phase"})
+                st.plotly_chart(fig_circ, use_container_width=True)
+            else:
+                # Fallback: simple stats
+                st.write("**HCP Circularity:**")
+                st.write(f"- Mean: {df_red_morph['Circularity'].mean():.3f}" if not df_red_morph.empty else "- No data")
+                st.write("**FCC Circularity:**")
+                st.write(f"- Mean: {df_green_morph['Circularity'].mean():.3f}" if not df_green_morph.empty else "- No data")
 
     else:
         st.warning("No grains detected. Try adjusting the image or segmentation settings.")
@@ -312,4 +357,11 @@ else:
         - ✅ JPG/JPEG
         - ✅ BMP (automatically converted to PNG)
         - ✅ TIFF
+        """)
+    
+    with st.expander("Required Packages"):
+        st.write("""
+        ```bash
+        pip install streamlit opencv-python-headless numpy pandas scikit-image pillow plotly
+        ```
         """)
