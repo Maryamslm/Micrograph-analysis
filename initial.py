@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from skimage.measure import regionprops, label
+import io
 
 # Page Configuration
 st.set_page_config(page_title="Microstructure Analyzer", layout="wide")
@@ -18,7 +19,7 @@ It calculates absolute areas, area fractions, and morphological metrics based on
 st.sidebar.header("Configuration")
 
 # 1. Image Upload
-uploaded_file = st.sidebar.file_uploader("Upload Microstructure Image", type=["png", "jpg", "jpeg"])
+uploaded_file = st.sidebar.file_uploader("Upload Microstructure Image", type=["png", "jpg", "jpeg", "bmp", "tiff"])
 
 # 2. Domain Calibration
 st.sidebar.subheader("Physical Calibration")
@@ -31,12 +32,50 @@ use_auto_threshold = st.sidebar.checkbox("Use Automatic Color Detection", value=
 if not use_auto_threshold:
     st.sidebar.warning("Manual HSV ranges not implemented for this demo to keep it simple. Using fixed robust ranges.")
 
+# --- Helper Function to Convert BMP ---
+def convert_bmp_to_png(img_file):
+    """Convert BMP image to PNG format in memory"""
+    try:
+        # Open the BMP file with PIL
+        img = Image.open(img_file)
+        
+        # Convert to RGB if necessary (handle different modes)
+        if img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Save to bytes buffer as PNG
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        
+        return img, buffer
+    except Exception as e:
+        st.error(f"Error converting image: {e}")
+        return None, None
+
 # --- Main Processing Logic ---
 
 if uploaded_file is not None:
-    # Load Image
-    image = Image.open(uploaded_file)
-    img_np = np.array(image)
+    # Check file extension
+    file_extension = uploaded_file.name.split('.')[-1].lower()
+    
+    # Convert BMP to PNG if necessary
+    if file_extension == 'bmp':
+        st.info("🔄 Converting BMP to PNG format...")
+        img, converted_buffer = convert_bmp_to_png(uploaded_file)
+        
+        if img is None:
+            st.error("Failed to convert BMP file. Please ensure the file is a valid image.")
+            st.stop()
+        
+        st.success("✅ BMP converted successfully!")
+        img_np = np.array(img)
+    else:
+        # Load image normally for other formats
+        image = Image.open(uploaded_file)
+        img_np = np.array(image)
     
     # Remove Alpha channel if present
     if img_np.shape[2] == 4:
@@ -164,7 +203,7 @@ if uploaded_file is not None:
     st.divider()
 
     # --- Morphology Section ---
-    st.subheader(" Morphological Metrics")
+    st.subheader("📐 Morphological Metrics")
     
     if not df_all_morph.empty:
         # Summary Statistics
@@ -177,7 +216,7 @@ if uploaded_file is not None:
         
         # Detailed Data Download
         st.download_button(
-            label="Download Detailed Grain Data (CSV)",
+            label="📥 Download Detailed Grain Data (CSV)",
             data=df_all_morph.to_csv(index=False).encode('utf-8'),
             file_name='grain_morphology_data.csv',
             mime='text/csv',
@@ -188,13 +227,13 @@ if uploaded_file is not None:
         col_h1, col_h2 = st.columns(2)
         with col_h1:
             if not df_red_morph.empty:
-                st.histogram(df_red_morph, x="ECD (µm)", title="HCP Grain Size Distribution")
+                st.bar_chart(df_red_morph, x="ECD (µm)", title="HCP Grain Size Distribution")
         with col_h2:
             if not df_green_morph.empty:
-                st.histogram(df_green_morph, x="ECD (µm)", title="FCC Grain Size Distribution")
+                st.bar_chart(df_green_morph, x="ECD (µm)", title="FCC Grain Size Distribution")
                 
         st.write("**Circularity Distribution (Shape):**")
-        st.histogram(df_all_morph, x="Circularity", color="Phase", title="Circularity by Phase (1.0 = Perfect Circle)")
+        st.bar_chart(df_all_morph, x="Circularity", color="Phase", title="Circularity by Phase (1.0 = Perfect Circle)")
 
     else:
         st.warning("No grains detected. Try adjusting the image or segmentation settings.")
@@ -211,4 +250,12 @@ else:
            - Pixel Area = 62,500 / (Image Width * Image Height).
         3. **Absolute Area:** Pixel Count * Pixel Area.
         4. **Morphology:** Uses connected component labeling to identify individual grains and calculate shape factors.
+        """)
+    
+    with st.expander("Supported File Formats"):
+        st.write("""
+        - ✅ PNG
+        - ✅ JPG/JPEG
+        - ✅ BMP (automatically converted to PNG)
+        - ✅ TIFF
         """)
