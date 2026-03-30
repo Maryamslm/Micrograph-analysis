@@ -26,7 +26,15 @@ st.sidebar.subheader("Physical Calibration")
 domain_size_um = st.sidebar.number_input("Total Domain Length (µm)", value=250.0, help="The physical length of the square image side.")
 st.sidebar.info(f"Assuming a square domain of {domain_size_um} x {domain_size_um} µm")
 
-# 3. Color Thresholding Tolerance (Advanced)
+# 3. Area Fraction Calculation Mode
+st.sidebar.subheader("Analysis Options")
+exclude_boundaries = st.sidebar.checkbox(
+    "Exclude Grain Boundaries from Area Fraction", 
+    value=False,
+    help="When checked, area fractions are normalized so that HCP + FCC = 100% (boundaries excluded)"
+)
+
+# 4. Color Thresholding Tolerance (Advanced)
 st.sidebar.subheader("Segmentation Settings")
 use_auto_threshold = st.sidebar.checkbox("Use Automatic Color Detection", value=True)
 if not use_auto_threshold:
@@ -115,20 +123,39 @@ if uploaded_file is not None:
 
     # --- Calculations ---
     
-    # 1. Area Calculations
+    # 1. Area Calculations (Absolute - these don't change)
     red_pixels = cv2.countNonZero(mask_red)
     green_pixels = cv2.countNonZero(mask_green)
+    boundary_pixels = total_pixels - red_pixels - green_pixels
     
     red_area_abs = red_pixels * area_per_pixel
     green_area_abs = green_pixels * area_per_pixel
+    boundary_area_abs = boundary_pixels * area_per_pixel
     
-    # Note: We calculate fraction based on Total Image Area, not sum of phases, 
-    # because black grain boundaries exist.
-    red_fraction = (red_pixels / total_pixels) * 100
-    green_fraction = (green_pixels / total_pixels) * 100
-    boundary_fraction = 100 - (red_fraction + green_fraction)
+    # 2. Area Fraction Calculations
+    if exclude_boundaries:
+        # Normalize to exclude boundaries (HCP + FCC = 100%)
+        total_phase_pixels = red_pixels + green_pixels
+        
+        if total_phase_pixels > 0:
+            red_fraction = (red_pixels / total_phase_pixels) * 100
+            green_fraction = (green_pixels / total_phase_pixels) * 100
+        else:
+            red_fraction = 0
+            green_fraction = 0
+            
+        boundary_fraction = 0  # Set to zero since we're excluding it
+        
+        st.info("📊 **Mode:** Area fractions normalized to exclude grain boundaries (HCP + FCC = 100%)")
+    else:
+        # Include boundaries in total area
+        red_fraction = (red_pixels / total_pixels) * 100
+        green_fraction = (green_pixels / total_pixels) * 100
+        boundary_fraction = (boundary_pixels / total_pixels) * 100
+        
+        st.info("📊 **Mode:** Area fractions include grain boundaries in total area")
 
-    # 2. Morphology Analysis using Scikit-Image
+    # 3. Morphology Analysis using Scikit-Image
     def analyze_morphology(mask, phase_name, area_per_pixel):
         # Label connected components
         labeled_mask = label(mask)
@@ -180,16 +207,40 @@ if uploaded_file is not None:
     with col1:
         st.subheader("📊 Phase Quantification")
         
+        # Show absolute areas (these never change)
+        st.write("**Absolute Areas:**")
         kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric("HCP Area (Red)", f"{red_area_abs:.1f} µm²", f"{red_fraction:.1f}%")
-        kpi2.metric("FCC Area (Green)", f"{green_area_abs:.1f} µm²", f"{green_fraction:.1f}%")
-        kpi3.metric("Boundaries/Other", f"{boundary_fraction:.1f}%", "Black regions")
+        kpi1.metric("HCP Area", f"{red_area_abs:.1f} µm²", f"{red_pixels} pixels")
+        kpi2.metric("FCC Area", f"{green_area_abs:.1f} µm²", f"{green_pixels} pixels")
+        kpi3.metric("Boundary Area", f"{boundary_area_abs:.1f} µm²", f"{boundary_pixels} pixels")
+        
+        st.divider()
+        
+        # Show area fractions (these change based on mode)
+        st.write("**Area Fractions:**")
+        if exclude_boundaries:
+            kpi4, kpi5 = st.columns(2)
+            kpi4.metric("HCP Fraction", f"{red_fraction:.2f}%", "Normalized")
+            kpi5.metric("FCC Fraction", f"{green_fraction:.2f}%", "Normalized")
+            st.caption("✅ HCP + FCC = 100% (boundaries excluded)")
+        else:
+            kpi4, kpi5, kpi6 = st.columns(3)
+            kpi4.metric("HCP Fraction", f"{red_fraction:.1f}%")
+            kpi5.metric("FCC Fraction", f"{green_fraction:.1f}%")
+            kpi6.metric("Boundaries", f"{boundary_fraction:.1f}%")
+            st.caption("📏 Fractions include grain boundaries")
         
         st.write("**Area Fraction Chart:**")
-        chart_data = pd.DataFrame({
-            "Phase": ["HCP (Red)", "FCC (Green)", "Boundaries"],
-            "Area Fraction (%)": [red_fraction, green_fraction, boundary_fraction]
-        })
+        if exclude_boundaries:
+            chart_data = pd.DataFrame({
+                "Phase": ["HCP (Red)", "FCC (Green)"],
+                "Area Fraction (%)": [red_fraction, green_fraction]
+            })
+        else:
+            chart_data = pd.DataFrame({
+                "Phase": ["HCP (Red)", "FCC (Green)", "Boundaries"],
+                "Area Fraction (%)": [red_fraction, green_fraction, boundary_fraction]
+            })
         st.bar_chart(chart_data, x="Phase", y="Area Fraction (%)")
 
     with col2:
@@ -249,7 +300,10 @@ else:
            - Total Domain = 250 µm x 250 µm = 62,500 µm².
            - Pixel Area = 62,500 / (Image Width * Image Height).
         3. **Absolute Area:** Pixel Count * Pixel Area.
-        4. **Morphology:** Uses connected component labeling to identify individual grains and calculate shape factors.
+        4. **Area Fractions:**
+           - **With boundaries:** Fraction of total image area
+           - **Without boundaries:** Normalized so HCP + FCC = 100%
+        5. **Morphology:** Uses connected component labeling to identify individual grains and calculate shape factors.
         """)
     
     with st.expander("Supported File Formats"):
