@@ -1,0 +1,214 @@
+import streamlit as st
+import cv2
+import numpy as np
+import pandas as pd
+from PIL import Image
+from skimage.measure import regionprops, label
+
+# Page Configuration
+st.set_page_config(page_title="Microstructure Analyzer", layout="wide")
+
+st.title("🔬 Microstructure Phase Analyzer (HCP/FCC)")
+st.markdown("""
+This tool analyzes two-phase microstructure images. 
+It calculates absolute areas, area fractions, and morphological metrics based on a defined domain size.
+""")
+
+# --- Sidebar Controls ---
+st.sidebar.header("Configuration")
+
+# 1. Image Upload
+uploaded_file = st.sidebar.file_uploader("Upload Microstructure Image", type=["png", "jpg", "jpeg"])
+
+# 2. Domain Calibration
+st.sidebar.subheader("Physical Calibration")
+domain_size_um = st.sidebar.number_input("Total Domain Length (µm)", value=250.0, help="The physical length of the square image side.")
+st.sidebar.info(f"Assuming a square domain of {domain_size_um} x {domain_size_um} µm")
+
+# 3. Color Thresholding Tolerance (Advanced)
+st.sidebar.subheader("Segmentation Settings")
+use_auto_threshold = st.sidebar.checkbox("Use Automatic Color Detection", value=True)
+if not use_auto_threshold:
+    st.sidebar.warning("Manual HSV ranges not implemented for this demo to keep it simple. Using fixed robust ranges.")
+
+# --- Main Processing Logic ---
+
+if uploaded_file is not None:
+    # Load Image
+    image = Image.open(uploaded_file)
+    img_np = np.array(image)
+    
+    # Remove Alpha channel if present
+    if img_np.shape[2] == 4:
+        img_np = img_np[:, :, :3]
+        
+    h, w, _ = img_np.shape
+    
+    # Calculate Pixel Resolution
+    # Physical Area = domain_size^2
+    # Pixel Area = (Physical Area) / (Total Pixels)
+    total_physical_area = domain_size_um ** 2
+    total_pixels = h * w
+    area_per_pixel = total_physical_area / total_pixels
+    
+    st.metric("Image Resolution", f"{w} x {h} pixels")
+    st.metric("Calibration Factor", f"{area_per_pixel:.4f} µm²/pixel")
+
+    # Convert to HSV for better color segmentation
+    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
+
+    # Define Range for Red (HCP)
+    # Red is usually around 0 or 180 hue. We check both ranges.
+    lower_red1 = np.array([0, 70, 50])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([160, 70, 50])
+    upper_red2 = np.array([180, 255, 255])
+    
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    mask_red = cv2.bitwise_or(mask1, mask2)
+
+    # Define Range for Green (FCC)
+    # Green is usually around 60 hue.
+    lower_green = np.array([40, 70, 50])
+    upper_green = np.array([80, 255, 255])
+    mask_green = cv2.inRange(hsv, lower_green, upper_green)
+
+    # --- Calculations ---
+    
+    # 1. Area Calculations
+    red_pixels = cv2.countNonZero(mask_red)
+    green_pixels = cv2.countNonZero(mask_green)
+    
+    red_area_abs = red_pixels * area_per_pixel
+    green_area_abs = green_pixels * area_per_pixel
+    
+    # Note: We calculate fraction based on Total Image Area, not sum of phases, 
+    # because black grain boundaries exist.
+    red_fraction = (red_pixels / total_pixels) * 100
+    green_fraction = (green_pixels / total_pixels) * 100
+    boundary_fraction = 100 - (red_fraction + green_fraction)
+
+    # 2. Morphology Analysis using Scikit-Image
+    def analyze_morphology(mask, phase_name, area_per_pixel):
+        # Label connected components
+        labeled_mask = label(mask)
+        props = regionprops(labeled_mask)
+        
+        if not props:
+            return pd.DataFrame()
+            
+        data = []
+        for prop in props:
+            # Filter noise (grains smaller than 5 pixels)
+            if prop.area < 5:
+                continue
+                
+            area_um2 = prop.area * area_per_pixel
+            # Equivalent Circle Diameter: sqrt(4*Area/pi)
+            ecd_um = np.sqrt(4 * area_um2 / np.pi)
+            
+            # Circularity: 4*pi*Area / Perimeter^2 (1 = perfect circle)
+            # Adding small epsilon to avoid division by zero
+            perimeter = prop.perimeter if prop.perimeter > 0 else 0.001
+            circularity = (4 * np.pi * prop.area) / (perimeter ** 2)
+            
+            # Aspect Ratio
+            if prop.major_axis_length > 0:
+                aspect_ratio = prop.major_axis_length / prop.minor_axis_length
+            else:
+                aspect_ratio = 1.0
+                
+            data.append({
+                "Phase": phase_name,
+                "Grain ID": prop.label,
+                "Area (µm²)": area_um2,
+                "ECD (µm)": ecd_um,
+                "Circularity": circularity,
+                "Aspect Ratio": aspect_ratio
+            })
+            
+        return pd.DataFrame(data)
+
+    df_red_morph = analyze_morphology(mask_red, "HCP (Red)", area_per_pixel)
+    df_green_morph = analyze_morphology(mask_green, "FCC (Green)", area_per_pixel)
+    df_all_morph = pd.concat([df_red_morph, df_green_morph], ignore_index=True)
+
+    # --- Display Results ---
+
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📊 Phase Quantification")
+        
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("HCP Area (Red)", f"{red_area_abs:.1f} µm²", f"{red_fraction:.1f}%")
+        kpi2.metric("FCC Area (Green)", f"{green_area_abs:.1f} µm²", f"{green_fraction:.1f}%")
+        kpi3.metric("Boundaries/Other", f"{boundary_fraction:.1f}%", "Black regions")
+        
+        st.write("**Area Fraction Chart:**")
+        chart_data = pd.DataFrame({
+            "Phase": ["HCP (Red)", "FCC (Green)", "Boundaries"],
+            "Area Fraction (%)": [red_fraction, green_fraction, boundary_fraction]
+        })
+        st.bar_chart(chart_data, x="Phase", y="Area Fraction (%)")
+
+    with col2:
+        st.subheader("🖼️ Segmentation Preview")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.image(mask_red, caption="Detected HCP (Red)", use_column_width=True)
+        with c2:
+            st.image(mask_green, caption="Detected FCC (Green)", use_column_width=True)
+
+    st.divider()
+
+    # --- Morphology Section ---
+    st.subheader(" Morphological Metrics")
+    
+    if not df_all_morph.empty:
+        # Summary Statistics
+        st.write("**Summary Statistics per Phase:**")
+        summary = df_all_morph.groupby("Phase")[["Area (µm²)", "ECD (µm)", "Circularity", "Aspect Ratio"]].mean()
+        summary['Grain Count'] = df_all_morph.groupby("Phase").size()
+        # Reorder columns
+        summary = summary[['Grain Count', 'Area (µm²)', 'ECD (µm)', 'Circularity', 'Aspect Ratio']]
+        st.dataframe(summary.style.format("{:.2f}"))
+        
+        # Detailed Data Download
+        st.download_button(
+            label="Download Detailed Grain Data (CSV)",
+            data=df_all_morph.to_csv(index=False).encode('utf-8'),
+            file_name='grain_morphology_data.csv',
+            mime='text/csv',
+        )
+        
+        # Histograms
+        st.write("**Grain Size Distribution (ECD):**")
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            if not df_red_morph.empty:
+                st.histogram(df_red_morph, x="ECD (µm)", title="HCP Grain Size Distribution")
+        with col_h2:
+            if not df_green_morph.empty:
+                st.histogram(df_green_morph, x="ECD (µm)", title="FCC Grain Size Distribution")
+                
+        st.write("**Circularity Distribution (Shape):**")
+        st.histogram(df_all_morph, x="Circularity", color="Phase", title="Circularity by Phase (1.0 = Perfect Circle)")
+
+    else:
+        st.warning("No grains detected. Try adjusting the image or segmentation settings.")
+
+else:
+    st.info("👈 Please upload an image from the sidebar to begin analysis.")
+    
+    # Display example logic explanation
+    with st.expander("How the calculation works"):
+        st.write("""
+        1. **Pixel Counting:** The app counts red and green pixels using HSV color thresholding.
+        2. **Calibration:** 
+           - Total Domain = 250 µm x 250 µm = 62,500 µm².
+           - Pixel Area = 62,500 / (Image Width * Image Height).
+        3. **Absolute Area:** Pixel Count * Pixel Area.
+        4. **Morphology:** Uses connected component labeling to identify individual grains and calculate shape factors.
+        """)
